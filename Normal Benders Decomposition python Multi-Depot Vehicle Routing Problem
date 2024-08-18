@@ -1,0 +1,77 @@
+pip install gurobipy
+
+import gurobipy as gp
+from gurobipy import GRB
+
+# Dados do problema (exemplo simplificado)
+I = [0, 1]  # Depósitos
+J = [0, 1, 2]  # Clientes
+K = [0, 1]  # Veículos
+Cij = {(0, 1): 10, (1, 2): 15, (0, 2): 20, (1, 0): 5}  # Custo entre os nós
+demandas = {0: 10, 1: 15, 2: 10}  # Demanda dos clientes
+Qk = {0: 20, 1: 30}  # Capacidade dos veículos
+
+# Criar o modelo mestre
+master = gp.Model("MDVRP_Master")
+
+# Variáveis do problema mestre
+y = master.addVars(I, K, vtype=GRB.BINARY, name="y")
+
+# Função objetivo do problema mestre (placeholder inicial)
+master.setObjective(0, GRB.MINIMIZE)
+
+# Restrição de capacidade dos depósitos
+master.addConstrs((gp.quicksum(y[i, k] for k in K) <= 1 for i in I), name="CapacidadeDep")
+
+# Resolver o problema mestre inicialmente
+master.optimize()
+
+# Iniciar a iteração da decomposição de Benders
+for _ in range(100):  # Número máximo de iterações
+    # Fixar as variáveis y e resolver o subproblema
+    subproblem = gp.Model("MDVRP_Subproblem")
+    x = subproblem.addVars(I, J, K, vtype=GRB.BINARY, name="x")
+
+    # Função objetivo do subproblema
+    subproblem.setObjective(gp.quicksum(Cij[i, j] * x[i, j, k] for i in I for j in J for k in K), GRB.MINIMIZE)
+
+    # Restrições de capacidade dos veículos
+    subproblem.addConstrs((gp.quicksum(demandas[j] * x[i, j, k] for j in J) <= Qk[k] for i in I for k in K), 
+                          name="CapacidadeVeiculo")
+
+    # Restrições de fluxo
+    subproblem.addConstrs((gp.quicksum(x[i, j, k] for i in I) == 1 for j in J for k in K), name="Fluxo")
+
+    # Adicionar os cortes de Benders com base na solução atual do mestre
+    for i in I:
+        for k in K:
+            if y[i, k].x > 0.5:  # Verifica se y[i,k] está ativado
+                subproblem.addConstrs((x[i, j, k] <= y[i, k] for j in J), name=f"Corte_Benders_{i}_{k}")
+
+    # Resolver o subproblema
+    subproblem.optimize()
+
+    # Verificar se a solução viola as restrições do mestre
+    if subproblem.Status == GRB.OPTIMAL:
+        # Verificar convergência
+        if abs(master.ObjVal - subproblem.ObjVal) < 1e-5:
+            print("Solução ótima encontrada!")
+            break
+
+        # Adicionar cortes de Benders ao problema mestre
+        master.addConstr(gp.quicksum(Cij[i, j] * x[i, j, k].x for i in I for j in J for k in K) <= 
+                         gp.quicksum(y[i, k] for i in I for k in K), name="BendersCut")
+
+        # Resolver novamente o problema mestre
+        master.optimize()
+    else:
+        print("Subproblema não conseguiu encontrar uma solução ótima. Ajuste necessário.")
+        break
+
+# Mostrar a solução final
+if master.Status == GRB.OPTIMAL:
+    print("Solução ótima:", master.ObjVal)
+    for i in I:
+        for k in K:
+            if y[i, k].x > 0.5:
+                print(f"Depósito {i}, Veículo {k}")
